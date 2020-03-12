@@ -1,5 +1,5 @@
 # KafkaPractice
-This repository shows simple scala kafka code for beginners
+This repository shows simple scala kafka example code for beginners
 
 It showcases 
 1. producers
