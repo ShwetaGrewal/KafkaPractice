@@ -1,0 +1,7 @@
+1. AVRO: Keeps schema with data and hence can change schema anytime without problem but has overhead of keeping schema
+2. Schema Registery: Use schema registery to keep schema to save overhead, each schema has a schema id. While sending record send schema-id 
+instead of schema. Use third party schema registry and avro for serialization (recommmended for kafka)
+/*props.put("key.serializer","io.confluent.kafka.serializers.KafkaAvroSerializer");
+props.put("value.serializer","io.confluent.kafka.serializers.KafkaAvroSerializer");
+props.put("schema.registry.url", schemaUrl);*/
+

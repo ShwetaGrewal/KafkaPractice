@@ -1,0 +1,72 @@
+1. Kafka consumers are typically part of a consumer group. When multiple consumers are subscribed to a topic and belong to the same consumer group, 
+each consumer in the group will receive messages from a different subset of the partitions in the topic.
+
+consumer(from consumer group) has 1:N relationship with partitions and hence consumer group should have consumers<=partitions in the subscribed topic.
+2. Moving partition ownership from one consumer to another is called a rebalance and causes unavaialability but also scalability and efficiency. 
+The way consumers maintain membership in a consumer group and ownership of the partitions assigned to them is by sending heartbeats to a Kafka broker
+designated as the group coordinator (this broker can be different for different consumer groups). As long as the consumer is sending heartbeats at 
+regular intervals, it is assumed to be alive, well, and processing messages from its partitions. Heartbeats are sent when the consumer polls 
+(i.e., retrieves records) and when it commits records it has consumed. If the consumer stops sending heartbeats for long enough, 
+its session will time out and the group coordinator will consider it dead and trigger a rebalance. If a consumer crashed and stopped processing 
+messages, it will take the group coordinator a few seconds without heartbeats to decide it is dead and trigger the rebalance. During those seconds, 
+no messages will be processed from the partitions owned by the dead consumer. When closing a consumer cleanly, the consumer will notify the group
+coordinator that it is leaving, and the group coordinator will trigger a rebalance immediately, reducing the gap in processing. 
+
+2.2 When a consumer wants to join a group, it sends a JoinGroup request to the group coordinator. The first consumer to join the group becomes the 
+group leader. The leader receives a list of all consumers in the group from the group coordinator (this will include all consumers that sent a 
+heartbeat recently and which are therefore considered alive) and is responsible for assigning a subset of partitions to each consumer. It uses an 
+implementation of PartitionAssignor to decide which partitions should be handled by which consumer.
+Kafka has two built-in partition assignment policies. After deciding on the partition assignment, the consumer leader sends the list of assignments 
+to the GroupCoordinator, which sends this information to all the consumers. Each consumer only sees his own assignment—the leader is the only client 
+process that has the full list of consumers in the group and their assignments. This process repeats every time a rebalance happens.
+
+3.The poll loop does a lot more than just get data. The first time you call poll() with a new consumer, it is responsible for finding the 
+GroupCoordinator, joining the consumer group, and receiving a partition assignment. If a rebalance is triggered, it will be handled inside the poll 
+loop as well. And of course the heartbeats that keep consumers alive are sent from within the poll loop. For this reason, we try to make sure
+that whatever processing we do between iterations is fast and efficient.
+
+4. To run multiple consumers in the same group in one application, you will need to run each in its own thread. It is useful to wrap the consumer
+logic in its own object and then use Java’s ExecutorService to start multiple threads each with its own consumer.
+
+5. partition.assignment.strategy: partitions are assigned to consumers in a consumer group. A PartitionAssignor is a class that, given consumers and 
+topics they subscribed to, decides which partitions will be assigned to which consumer. By default, Kafka has two assignment strategies:
+5.1 Range: Assigns to each consumer a consecutive subset of partitions from each topic it subscribes to. So if consumers C1 and C2 are subscribed to 
+two topics, T1 and T2, and each of the topics has three partitions, then C1 will be assigned partitions 0 and 1 from topics T1 and T2, 
+while C2 will be assigned partition 2 from those topics. Because each topic has an uneven number of partitions and the assignment is done for each 
+topic independently, the first consumer ends up with more partitions than the second. This happens whenever Range assignment is used and
+the number of consumers does not divide the number of partitions in each topic neatly.
+5.2 RoundRobin:Takes all the partitions from all subscribed topics and assigns them to consumers sequentially, one by one. If C1 and C2 described previously used RoundRobin
+assignment, C1 would have partitions 0 and 2 from topic T1 and partition 1 from topic T2. C2 would have partition 1 from topic T1 and partitions 0 and 2 from
+topic T2. In general, if all consumers are subscribed to the same topics (a very common scenario), RoundRobin assignment will end up with all 
+consumers having the same number of partitions (or at most 1 partition difference).
+The partition.assignment.strategy allows you to choose a partition-assignment strategy. Default is range, you can create your own too.
+
+6. Commits and offsets: Consumer produces a message to Kafka, to a special _consumer_offsets topic, with the committed offset for each partition. If a 
+consumer crashes or a new consumer joins the consumer group, this will trigger a rebalance. After a rebalance, each consumer may be assigned a new set 
+of partitions than the one it processed before. In order to know where to pick up the work, the consumer will read the latest committed offset of each 
+partition and continue from there.If the committed offset is smaller than the offset of the last message the client processed, the messages between 
+the last processed offset and the committed offset will be processed twice. If the committed offset is larger than the offset of the last message the 
+client actually processed, all messages between the last processed offset and the committed offset will be missed by the consumer group. 
+
+6.2 Handling commits: 
+	6.2.1 enable.auto.commit=true (enable.auto.commit.interval.ms)
+	6.2.2 commitSync() : Commits latest offset returned by poll(), if commit fails it gives an exception. Do it insidepoll loop
+	6.2.3 commitAsync(): can have a callback similar to send function. If you try to retry commit in callback, imagine thatwe sent a request to commit 
+	offset 2000. There is a temporary communication problem, so the broker never gets the request and therefore never responds. Meanwhile,we processed 
+	another batch and successfully committed offset 3000. If commitAsync() now retries the previously failed commit, it might succeed in committing 
+	offset 2000 after offset 3000 was already processed and committed. In the case of a rebalance, this will cause more duplicates.
+	6.2.4 Combine sync and async:  if we know that this is the last commit before we close the consumer, or before a rebalance, we want to make extra sure
+	that the commit succeeds. Therefore, a common pattern is to combine commitAsync() with commitSync() just before shutdown
+
+7. The consumer API allows you to run your own code when partitions are added orremoved from the consumer. You do this by passing a 
+ConsumerRebalanceListener when calling the subscribe() method. ConsumerRebalanceListener has two methods you can implement:
+	7.1 public void onPartitionsRevoked(Collection<TopicPartition> partitions): Called before the rebalancing starts and after the consumer stopped 
+	consuming messages. This is where you want to commit offsets, so whoever gets this partition next will know where to start.
+	7.2 public void onPartitionsAssigned(Collection<TopicPartition> partitions): Called after partitions have been reassigned to the broker, but before 
+	the consumer starts consuming messages.
+	
+8. Read from specific part:
+	8.1  seekToBeginning(TopicPartition tp)
+	8.2  seekToEnd(TopicPartition tp).
+	8.3  seek(TopicPartition tp)
+	
